@@ -16,7 +16,7 @@
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 from __future__ import annotations
 
-DOCUMENTATION = '''
+DOCUMENTATION = """
     name: free
     short_description: Executes tasks without waiting for all hosts
     description:
@@ -27,7 +27,7 @@ DOCUMENTATION = '''
           won't hold up the rest of the hosts and tasks.
     version_added: "2.0"
     author: Ansible Core Team
-'''
+"""
 
 import time
 
@@ -54,7 +54,7 @@ class StrategyModule(StrategyBase):
         self._host_pinned = False
 
     def run(self, iterator, play_context):
-        '''
+        """
         The "free" strategy is a bit more complex, in that it allows tasks to
         be sent to hosts as quickly as they can be processed. This means that
         some hosts may finish very quickly if run tasks result in little or no
@@ -65,7 +65,7 @@ class StrategyModule(StrategyBase):
         and starting the search from there as opposed to the top of the hosts
         list again, which would end up favoring hosts near the beginning of the
         list.
-        '''
+        """
 
         # the last host to be given a task
         last_host = 0
@@ -95,6 +95,7 @@ class StrategyModule(StrategyBase):
 
             # try and find an unblocked host with a task to run
             host_results = []
+            meta_task_dummy_results_count = 0
             while True:
                 host = hosts_left[last_host]
                 display.debug("next free host: %s" % host)
@@ -171,16 +172,10 @@ class StrategyModule(StrategyBase):
                                 display.warning("Using run_once with the free strategy is not currently supported. This task will still be "
                                                 "executed for every host in the inventory list.")
 
-                        # check to see if this task should be skipped, due to it being a member of a
-                        # role which has already run (and whether that role allows duplicate execution)
-                        if not isinstance(task, Handler) and task._role:
-                            role_obj = self._get_cached_role(task, iterator._play)
-                            if role_obj.has_run(host) and role_obj._metadata.allow_duplicates is False:
-                                display.debug("'%s' skipped because role has already run" % task, host=host_name)
-                                del self._blocked_hosts[host_name]
-                                continue
-
                         if task.action in C._ACTION_META:
+                            if self._host_pinned:
+                                meta_task_dummy_results_count += 1
+                                workers_free -= 1
                             self._execute_meta(task, play_context, iterator, target_host=host)
                             self._blocked_hosts[host_name] = False
                         else:
@@ -220,7 +215,7 @@ class StrategyModule(StrategyBase):
             host_results.extend(results)
 
             # each result is counted as a worker being free again
-            workers_free += len(results)
+            workers_free += len(results) + meta_task_dummy_results_count
 
             self.update_active_connections(results)
 
@@ -248,7 +243,12 @@ class StrategyModule(StrategyBase):
                             )
                         else:
                             is_handler = isinstance(included_file._task, Handler)
-                            new_blocks = self._load_included_file(included_file, iterator=iterator, is_handler=is_handler)
+                            new_blocks = self._load_included_file(
+                                included_file,
+                                iterator=iterator,
+                                is_handler=is_handler,
+                                handle_stats_and_callbacks=False,
+                            )
 
                         # let PlayIterator know about any new handlers included via include_role or
                         # import_role within include_role/include_taks
@@ -256,13 +256,20 @@ class StrategyModule(StrategyBase):
                     except AnsibleParserError:
                         raise
                     except AnsibleError as e:
-                        if included_file._is_role:
-                            # include_role does not have on_include callback so display the error
-                            display.error(to_text(e), wrap_text=False)
+                        display.error(to_text(e), wrap_text=False)
                         for r in included_file._results:
                             r._result['failed'] = True
+                            r._result['reason'] = str(e)
+                            self._tqm._stats.increment('failures', r._host.name)
+                            self._tqm.send_callback('v2_runner_on_failed', r)
                             failed_includes_hosts.add(r._host)
                         continue
+                    else:
+                        # since we skip incrementing the stats when the task result is
+                        # first processed, we do so now for each host in the list
+                        for host in included_file._hosts:
+                            self._tqm._stats.increment('ok', host.name)
+                        self._tqm.send_callback('v2_playbook_on_include', included_file)
 
                     for new_block in new_blocks:
                         if is_handler:

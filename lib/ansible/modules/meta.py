@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 
-DOCUMENTATION = r'''
+DOCUMENTATION = r"""
 module: meta
 short_description: Execute Ansible 'actions'
 version_added: '1.2'
@@ -33,7 +33,12 @@ options:
         - V(end_host) (added in Ansible 2.8) is a per-host variation of V(end_play). Causes the play to end for the current host without failing it.
         - V(end_batch) (added in Ansible 2.12) causes the current batch (see C(serial)) to end without failing the host(s).
           Note that with C(serial=0) or undefined this behaves the same as V(end_play).
-    choices: [ clear_facts, clear_host_errors, end_host, end_play, flush_handlers, noop, refresh_inventory, reset_connection, end_batch ]
+        - V(end_role) (added in Ansible 2.18) causes the currently executing role to end without failing the host(s).
+          Effectively all tasks from within a role after V(end_role) is executed are ignored. Since handlers live in a global,
+          play scope, all handlers added via the role are unaffected and are still executed if notified. It is an error
+          to call V(end_role) from outside of a role or from a handler. Note that V(end_role) does not have an effect to
+          the parent roles or roles that depend (via dependencies in meta/main.yml) on a role executing V(end_role).
+    choices: [ clear_facts, clear_host_errors, end_host, end_play, flush_handlers, noop, refresh_inventory, reset_connection, end_batch, end_role ]
     required: true
 extends_documentation_fragment:
     - action_common_attributes
@@ -62,6 +67,8 @@ attributes:
     connection:
       details: Most options in this action do not use a connection, except V(reset_connection) which still does not connect to the remote
       support: partial
+    until:
+      support: none
 notes:
     - V(clear_facts) will remove the persistent facts from M(ansible.builtin.set_fact) using O(ansible.builtin.set_fact#module:cacheable=True),
       but not the current host variable it creates for the current run.
@@ -71,9 +78,9 @@ seealso:
 - module: ansible.builtin.fail
 author:
     - Ansible Core Team
-'''
+"""
 
-EXAMPLES = r'''
+EXAMPLES = r"""
 # Example showing flushing handlers on demand, not at end of play
 - ansible.builtin.template:
     src: new.j2
@@ -119,4 +126,4 @@ EXAMPLES = r'''
   when:
   - ansible_distribution == 'CentOS'
   - ansible_distribution_major_version == '6'
-'''
+"""

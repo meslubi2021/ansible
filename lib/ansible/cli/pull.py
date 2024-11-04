@@ -12,7 +12,7 @@ from ansible.cli import CLI
 import datetime
 import os
 import platform
-import random
+import secrets
 import shlex
 import shutil
 import socket
@@ -28,11 +28,12 @@ from ansible.plugins.loader import module_loader
 from ansible.utils.cmd_functions import run_cmd
 from ansible.utils.display import Display
 
+
 display = Display()
 
 
 class PullCLI(CLI):
-    ''' Used to pull a remote copy of ansible on each managed node,
+    """ Used to pull a remote copy of ansible on each managed node,
         each set to run via cron and update playbook source via a source repository.
         This inverts the default *push* architecture of ansible into a *pull* architecture,
         which has near-limitless scaling potential.
@@ -44,7 +45,7 @@ class PullCLI(CLI):
         This is useful both for extreme scale-out as well as periodic remediation.
         Usage of the 'fetch' module to retrieve logs from ansible-pull runs would be an
         excellent way to gather and analyze remote logs from ansible-pull.
-    '''
+    """
 
     name = 'ansible-pull'
 
@@ -55,9 +56,9 @@ class PullCLI(CLI):
         1: 'File does not exist',
         2: 'File is not readable',
     }
-    ARGUMENTS = {'playbook.yml': 'The name of one the YAML format files to run as an Ansible playbook.'
-                                 'This can be a relative path within the checkout. By default, Ansible will'
-                                 "look for a playbook based on the host's fully-qualified domain name,"
+    ARGUMENTS = {'playbook.yml': 'The name of one the YAML format files to run as an Ansible playbook. '
+                                 'This can be a relative path within the checkout. By default, Ansible will '
+                                 "look for a playbook based on the host's fully-qualified domain name, "
                                  'on the host hostname and finally a playbook named *local.yml*.', }
 
     SKIP_INVENTORY_DEFAULTS = True
@@ -75,7 +76,7 @@ class PullCLI(CLI):
         return inv_opts
 
     def init_parser(self):
-        ''' create an options parser for bin/ansible '''
+        """ create an options parser for bin/ansible """
 
         super(PullCLI, self).init_parser(
             usage='%prog -U <repository> [options] [<playbook.yml>]',
@@ -101,8 +102,8 @@ class PullCLI(CLI):
                                       'This is a useful way to disperse git requests')
         self.parser.add_argument('-f', '--force', dest='force', default=False, action='store_true',
                                  help='run the playbook even if the repository could not be updated')
-        self.parser.add_argument('-d', '--directory', dest='dest', default=None,
-                                 help='absolute path of repository checkout directory (relative paths are not supported)')
+        self.parser.add_argument('-d', '--directory', dest='dest', default=None, type=opt_help.unfrack_path(),
+                                 help='path to the directory to which Ansible will checkout the repository.')
         self.parser.add_argument('-U', '--url', dest='url', default=None, help='URL of the playbook repository')
         self.parser.add_argument('--full', dest='fullclone', action='store_true', help='Do a full clone, instead of a shallow one.')
         self.parser.add_argument('-C', '--checkout', dest='checkout',
@@ -133,14 +134,13 @@ class PullCLI(CLI):
             hostname = socket.getfqdn()
             # use a hostname dependent directory, in case of $HOME on nfs
             options.dest = os.path.join(C.ANSIBLE_HOME, 'pull', hostname)
-        options.dest = os.path.expandvars(os.path.expanduser(options.dest))
 
         if os.path.exists(options.dest) and not os.path.isdir(options.dest):
             raise AnsibleOptionsError("%s is not a valid or accessible directory." % options.dest)
 
         if options.sleep:
             try:
-                secs = random.randint(0, int(options.sleep))
+                secs = secrets.randbelow(int(options.sleep))
                 options.sleep = secs
             except ValueError:
                 raise AnsibleOptionsError("%s is not a number." % options.sleep)
@@ -157,7 +157,7 @@ class PullCLI(CLI):
         return options
 
     def run(self):
-        ''' use Runner lib to do SSH things '''
+        """ use Runner lib to do SSH things """
 
         super(PullCLI, self).run()
 
@@ -313,6 +313,7 @@ class PullCLI(CLI):
         if context.CLIARGS['purge']:
             os.chdir('/')
             try:
+                display.debug("removing: %s" % context.CLIARGS['dest'])
                 shutil.rmtree(context.CLIARGS['dest'])
             except Exception as e:
                 display.error(u"Failed to remove %s: %s" % (context.CLIARGS['dest'], to_text(e)))

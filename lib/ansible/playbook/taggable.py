@@ -19,9 +19,9 @@ from __future__ import annotations
 
 from ansible.errors import AnsibleError
 from ansible.module_utils.six import string_types
+from ansible.module_utils.common.sentinel import Sentinel
 from ansible.playbook.attribute import FieldAttribute
 from ansible.template import Templar
-from ansible.utils.sentinel import Sentinel
 
 
 def _flatten_tags(tags: list) -> list:
@@ -48,7 +48,7 @@ class Taggable:
             raise AnsibleError('tags must be specified as a list', obj=ds)
 
     def evaluate_tags(self, only_tags, skip_tags, all_vars):
-        ''' this checks if the current item should be executed depending on tag options '''
+        """ this checks if the current item should be executed depending on tag options """
 
         if self.tags:
             templar = Templar(loader=self._loader, variables=all_vars)

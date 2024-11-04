@@ -24,34 +24,13 @@ from ansible.vars.plugins import get_vars_from_inventory_sources, get_vars_from_
 
 display = Display()
 
-INTERNAL_VARS = frozenset(['ansible_diff_mode',
-                           'ansible_config_file',
-                           'ansible_facts',
-                           'ansible_forks',
-                           'ansible_inventory_sources',
-                           'ansible_limit',
-                           'ansible_playbook_python',
-                           'ansible_run_tags',
-                           'ansible_skip_tags',
-                           'ansible_verbosity',
-                           'ansible_version',
-                           'inventory_dir',
-                           'inventory_file',
-                           'inventory_hostname',
-                           'inventory_hostname_short',
-                           'groups',
-                           'group_names',
-                           'omit',
-                           'playbook_dir', ])
-
 
 class InventoryCLI(CLI):
-    ''' used to display or dump the configured inventory as Ansible sees it '''
+    """ used to display or dump the configured inventory as Ansible sees it """
 
     name = 'ansible-inventory'
 
-    ARGUMENTS = {'host': 'The name of a host to match in the inventory, relevant when using --list',
-                 'group': 'The name of a group in the inventory, relevant when using --graph', }
+    ARGUMENTS = {'group': 'The name of a group in the inventory, relevant when using --graph', }
 
     def __init__(self, args):
 
@@ -62,7 +41,7 @@ class InventoryCLI(CLI):
 
     def init_parser(self):
         super(InventoryCLI, self).init_parser(
-            usage='usage: %prog [options] [host|group]',
+            usage='usage: %prog [options] [group]',
             desc='Show Ansible inventory information, by default it uses the inventory script JSON format')
 
         opt_help.add_inventory_options(self.parser)
@@ -73,7 +52,7 @@ class InventoryCLI(CLI):
         # remove unused default options
         self.parser.add_argument('--list-hosts', help=argparse.SUPPRESS, action=opt_help.UnrecognizedArgument)
 
-        self.parser.add_argument('args', metavar='host|group', nargs='?')
+        self.parser.add_argument('args', metavar='group', nargs='?', help='The name of a group in the inventory, relevant when using --graph')
 
         # Actions
         action_group = self.parser.add_argument_group("Actions", "One of following must be used on invocation, ONLY ONE!")
@@ -94,12 +73,12 @@ class InventoryCLI(CLI):
 
         # list
         self.parser.add_argument("--export", action="store_true", default=C.INVENTORY_EXPORT, dest='export',
-                                 help="When doing an --list, represent in a way that is optimized for export,"
+                                 help="When doing --list, represent in a way that is optimized for export,"
                                       "not as an accurate representation of how Ansible has processed it")
         self.parser.add_argument('--output', default=None, dest='output_file',
                                  help="When doing --list, send the inventory to a file instead of to the screen")
         # self.parser.add_argument("--ignore-vars-plugins", action="store_true", default=False, dest='ignore_vars_plugins',
-        #                          help="When doing an --list, skip vars data from vars plugins, by default, this would include group_vars/ and host_vars/")
+        #                          help="When doing --list, skip vars data from vars plugins, by default, this would include group_vars/ and host_vars/")
 
     def post_process_args(self, options):
         options = super(InventoryCLI, self).post_process_args(options)
@@ -246,7 +225,7 @@ class InventoryCLI(CLI):
     @staticmethod
     def _remove_internal(dump):
 
-        for internal in INTERNAL_VARS:
+        for internal in C.INTERNAL_STATIC_VARS:
             if internal in dump:
                 del dump[internal]
 

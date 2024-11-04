@@ -49,6 +49,12 @@ DOCUMENTATION = """
         default: False
         aliases: ['allow_none']
         version_added: '2.12'
+      interpolation:
+        description:
+          Allows for interpolation of values, see https://docs.python.org/3/library/configparser.html#configparser.BasicInterpolation
+        type: bool
+        default: True
+        version_added: '2.18'
     seealso:
       - ref: playbook_task_paths
         description: Search paths used for relative files.
@@ -92,7 +98,7 @@ from ansible.plugins.lookup import LookupBase
 
 
 def _parse_params(term, paramvals):
-    '''Safely split parameter term to preserve spaces'''
+    """Safely split parameter term to preserve spaces"""
 
     # TODO: deprecate this method
     valid_keys = paramvals.keys()
@@ -140,7 +146,10 @@ class LookupModule(LookupBase):
         self.set_options(var_options=variables, direct=kwargs)
         paramvals = self.get_options()
 
-        self.cp = configparser.ConfigParser(allow_no_value=paramvals.get('allow_no_value', paramvals.get('allow_none')))
+        self.cp = configparser.ConfigParser(
+            allow_no_value=paramvals.get('allow_no_value', paramvals.get('allow_none')),
+            interpolation=configparser.BasicInterpolation() if paramvals.get('interpolation') else None,
+        )
         if paramvals['case_sensitive']:
             self.cp.optionxform = to_native
 
@@ -154,16 +163,20 @@ class LookupModule(LookupBase):
                 params = _parse_params(term, paramvals)
                 try:
                     updated_key = False
+                    updated_options = False
                     for param in params:
                         if '=' in param:
                             name, value = param.split('=')
                             if name not in paramvals:
                                 raise AnsibleLookupError('%s is not a valid option.' % name)
-                            paramvals[name] = value
+                            self.set_option(name, value)
+                            updated_options = True
                         elif key == term:
                             # only take first, this format never supported multiple keys inline
                             key = param
                             updated_key = True
+                    if updated_options:
+                        paramvals = self.get_options()
                 except ValueError as e:
                     # bad params passed
                     raise AnsibleLookupError("Could not use '%s' from '%s': %s" % (param, params, to_native(e)), orig_exc=e)

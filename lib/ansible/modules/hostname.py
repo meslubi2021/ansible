@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 
-DOCUMENTATION = '''
+DOCUMENTATION = """
 ---
 module: hostname
 author:
@@ -36,7 +36,7 @@ options:
         description:
             - Which strategy to use to update the hostname.
             - If not set we try to autodetect, but this can be problematic, particularly with containers as they can present misleading information.
-            - Note that 'systemd' should be specified for RHEL/EL/CentOS 7+. Older distributions should use 'redhat'.
+            - Note that V(systemd) should be specified for RHEL/EL/CentOS 7+. Older distributions should use V(redhat).
         choices: ['alpine', 'debian', 'freebsd', 'generic', 'macos', 'macosx', 'darwin', 'openbsd', 'openrc', 'redhat', 'sles', 'solaris', 'systemd']
         type: str
         version_added: '2.9'
@@ -52,9 +52,9 @@ attributes:
         support: full
     platform:
         platforms: posix
-'''
+"""
 
-EXAMPLES = '''
+EXAMPLES = """
 - name: Set a hostname
   ansible.builtin.hostname:
     name: web01
@@ -63,7 +63,7 @@ EXAMPLES = '''
   ansible.builtin.hostname:
     name: web01
     use: systemd
-'''
+"""
 
 import os
 import platform
@@ -81,7 +81,6 @@ from ansible.module_utils.common.sys_info import get_platform_subclass
 from ansible.module_utils.facts.system.service_mgr import ServiceMgrFactCollector
 from ansible.module_utils.facts.utils import get_file_lines, get_file_content
 from ansible.module_utils.common.text.converters import to_native, to_text
-from ansible.module_utils.six import PY3, text_type
 
 STRATS = {
     'alpine': 'Alpine',
@@ -517,7 +516,7 @@ class DarwinStrategy(BaseStrategy):
     However, macOS also has LocalHostName and ComputerName settings.
     LocalHostName controls the Bonjour/ZeroConf name, used by services
     like AirDrop. This class implements a method, _scrub_hostname(), that mimics
-    the transformations macOS makes on hostnames when enterened in the Sharing
+    the transformations macOS makes on hostnames when entered in the Sharing
     preference pane. It replaces spaces with dashes and removes all special
     characters.
 
@@ -532,21 +531,6 @@ class DarwinStrategy(BaseStrategy):
         self.name_types = ('HostName', 'ComputerName', 'LocalHostName')
         self.scrubbed_name = self._scrub_hostname(self.module.params['name'])
 
-    def _make_translation(self, replace_chars, replacement_chars, delete_chars):
-        if PY3:
-            return str.maketrans(replace_chars, replacement_chars, delete_chars)
-
-        if not isinstance(replace_chars, text_type) or not isinstance(replacement_chars, text_type):
-            raise ValueError('replace_chars and replacement_chars must both be strings')
-        if len(replace_chars) != len(replacement_chars):
-            raise ValueError('replacement_chars must be the same length as replace_chars')
-
-        table = dict(zip((ord(c) for c in replace_chars), replacement_chars))
-        for char in delete_chars:
-            table[ord(char)] = None
-
-        return table
-
     def _scrub_hostname(self, name):
         """
         LocalHostName only accepts valid DNS characters while HostName and ComputerName
@@ -558,7 +542,7 @@ class DarwinStrategy(BaseStrategy):
         name = to_text(name)
         replace_chars = u'\'"~`!@#$%^&*(){}[]/=?+\\|-_ '
         delete_chars = u".'"
-        table = self._make_translation(replace_chars, u'-' * len(replace_chars), delete_chars)
+        table = str.maketrans(replace_chars, '-' * len(replace_chars), delete_chars)
         name = name.translate(table)
 
         # Replace multiple dashes with a single dash
@@ -902,8 +886,6 @@ def main():
 
     if name != current_hostname:
         name_before = current_hostname
-    elif name != permanent_hostname:
-        name_before = permanent_hostname
     else:
         name_before = permanent_hostname
 

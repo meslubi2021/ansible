@@ -111,8 +111,7 @@ DOCUMENTATION = """
       proxy_command:
         default: ''
         description:
-            - Proxy information for running the connection via a jumphost
-            - Also this plugin will scan 'ssh_args', 'ssh_extra_args' and 'ssh_common_args' from the 'ssh' plugin settings for proxy information if set.
+            - Proxy information for running the connection via a jumphost.
         type: string
         env: [{name: ANSIBLE_PARAMIKO_PROXY_COMMAND}]
         ini:
@@ -120,60 +119,6 @@ DOCUMENTATION = """
         vars:
           - name: ansible_paramiko_proxy_command
             version_added: '2.15'
-      ssh_args:
-          description: Only used in parsing ProxyCommand for use in this plugin.
-          default: ''
-          type: string
-          ini:
-              - section: 'ssh_connection'
-                key: 'ssh_args'
-          env:
-              - name: ANSIBLE_SSH_ARGS
-          vars:
-              - name: ansible_ssh_args
-                version_added: '2.7'
-          deprecated:
-              why: In favor of the "proxy_command" option.
-              version: "2.18"
-              alternatives: proxy_command
-      ssh_common_args:
-          description: Only used in parsing ProxyCommand for use in this plugin.
-          type: string
-          ini:
-              - section: 'ssh_connection'
-                key: 'ssh_common_args'
-                version_added: '2.7'
-          env:
-              - name: ANSIBLE_SSH_COMMON_ARGS
-                version_added: '2.7'
-          vars:
-              - name: ansible_ssh_common_args
-          cli:
-              - name: ssh_common_args
-          default: ''
-          deprecated:
-              why: In favor of the "proxy_command" option.
-              version: "2.18"
-              alternatives: proxy_command
-      ssh_extra_args:
-          description: Only used in parsing ProxyCommand for use in this plugin.
-          type: string
-          vars:
-              - name: ansible_ssh_extra_args
-          env:
-            - name: ANSIBLE_SSH_EXTRA_ARGS
-              version_added: '2.7'
-          ini:
-            - key: ssh_extra_args
-              section: ssh_connection
-              version_added: '2.7'
-          cli:
-            - name: ssh_extra_args
-          default: ''
-          deprecated:
-              why: In favor of the "proxy_command" option.
-              version: "2.18"
-              alternatives: proxy_command
       pty:
         default: True
         description: 'SUDO usually requires a PTY, True to give a PTY and False to not give a PTY.'
@@ -376,7 +321,7 @@ SFTP_CONNECTION_CACHE: dict[str, paramiko.sftp_client.SFTPClient] = {}
 
 
 class Connection(ConnectionBase):
-    ''' SSH based connections with Paramiko '''
+    """ SSH based connections with Paramiko """
 
     transport = 'paramiko'
     _log_channel: str | None = None
@@ -395,34 +340,11 @@ class Connection(ConnectionBase):
         return self
 
     def _set_log_channel(self, name: str) -> None:
-        '''Mimic paramiko.SSHClient.set_log_channel'''
+        """Mimic paramiko.SSHClient.set_log_channel"""
         self._log_channel = name
 
     def _parse_proxy_command(self, port: int = 22) -> dict[str, t.Any]:
-        proxy_command = None
-        # Parse ansible_ssh_common_args, specifically looking for ProxyCommand
-        ssh_args = [
-            self.get_option('ssh_extra_args'),
-            self.get_option('ssh_common_args'),
-            self.get_option('ssh_args', ''),
-        ]
-
-        args = self._split_ssh_args(' '.join(ssh_args))
-        for i, arg in enumerate(args):
-            if arg.lower() == 'proxycommand':
-                # _split_ssh_args split ProxyCommand from the command itself
-                proxy_command = args[i + 1]
-            else:
-                # ProxyCommand and the command itself are a single string
-                match = SETTINGS_REGEX.match(arg)
-                if match:
-                    if match.group(1).lower() == 'proxycommand':
-                        proxy_command = match.group(2)
-
-            if proxy_command:
-                break
-
-        proxy_command = self.get_option('proxy_command') or proxy_command
+        proxy_command = self.get_option('proxy_command') or None
 
         sock_kwarg = {}
         if proxy_command:
@@ -444,7 +366,7 @@ class Connection(ConnectionBase):
         return sock_kwarg
 
     def _connect_uncached(self) -> paramiko.SSHClient:
-        ''' activates the connection object '''
+        """ activates the connection object """
 
         if paramiko is None:
             raise AnsibleError("paramiko is not installed: %s" % to_native(PARAMIKO_IMPORT_ERR))
@@ -539,7 +461,7 @@ class Connection(ConnectionBase):
         return ssh
 
     def exec_command(self, cmd: str, in_data: bytes | None = None, sudoable: bool = True) -> tuple[int, bytes, bytes]:
-        ''' run a command on the remote host '''
+        """ run a command on the remote host """
 
         super(Connection, self).exec_command(cmd, in_data=in_data, sudoable=sudoable)
 
@@ -619,7 +541,7 @@ class Connection(ConnectionBase):
         return (chan.recv_exit_status(), no_prompt_out + stdout, no_prompt_out + stderr)
 
     def put_file(self, in_path: str, out_path: str) -> None:
-        ''' transfer a file from local to remote '''
+        """ transfer a file from local to remote """
 
         super(Connection, self).put_file(in_path, out_path)
 
@@ -648,7 +570,7 @@ class Connection(ConnectionBase):
             return result
 
     def fetch_file(self, in_path: str, out_path: str) -> None:
-        ''' save a remote file to the specified path '''
+        """ save a remote file to the specified path """
 
         super(Connection, self).fetch_file(in_path, out_path)
 
@@ -674,10 +596,10 @@ class Connection(ConnectionBase):
         return False
 
     def _save_ssh_host_keys(self, filename: str) -> None:
-        '''
+        """
         not using the paramiko save_ssh_host_keys function as we want to add new SSH keys at the bottom so folks
         don't complain about it :)
-        '''
+        """
 
         if not self._any_keys_added():
             return
@@ -710,7 +632,7 @@ class Connection(ConnectionBase):
         self._connect()
 
     def close(self) -> None:
-        ''' terminate the connection '''
+        """ terminate the connection """
 
         cache_key = self._cache_key()
         SSH_CONNECTION_CACHE.pop(cache_key, None)

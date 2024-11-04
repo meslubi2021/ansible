@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import decimal
 import itertools
 import operator
 import os
@@ -18,13 +19,13 @@ from ansible import context
 from ansible.errors import AnsibleError, AnsibleParserError, AnsibleUndefinedVariable, AnsibleAssertionError
 from ansible.module_utils.six import string_types
 from ansible.module_utils.parsing.convert_bool import boolean
-from ansible.module_utils.common.text.converters import to_text, to_native
+from ansible.module_utils.common.sentinel import Sentinel
+from ansible.module_utils.common.text.converters import to_text
 from ansible.parsing.dataloader import DataLoader
 from ansible.playbook.attribute import Attribute, FieldAttribute, ConnectionFieldAttribute, NonInheritableFieldAttribute
 from ansible.plugins.loader import module_loader, action_loader
 from ansible.utils.collection_loader._collection_finder import _get_collection_metadata, AnsibleCollectionRef
 from ansible.utils.display import Display
-from ansible.utils.sentinel import Sentinel
 from ansible.utils.vars import combine_vars, isidentifier, get_unique_id
 
 display = Display()
@@ -118,7 +119,7 @@ class FieldAttributeBase:
         return self._finalized
 
     def dump_me(self, depth=0):
-        ''' this is never called from production code, it is here to be used when debugging as a 'complex print' '''
+        """ this is never called from production code, it is here to be used when debugging as a 'complex print' """
         if depth == 0:
             display.debug("DUMPING OBJECT ------------------------------------------------------")
         display.debug("%s- %s (%s, id=%s)" % (" " * depth, self.__class__.__name__, self, id(self)))
@@ -132,11 +133,11 @@ class FieldAttributeBase:
             self._play.dump_me(depth + 2)
 
     def preprocess_data(self, ds):
-        ''' infrequently used method to do some pre-processing of legacy terms '''
+        """ infrequently used method to do some pre-processing of legacy terms """
         return ds
 
     def load_data(self, ds, variable_manager=None, loader=None):
-        ''' walk the input datastructure and assign any values '''
+        """ walk the input datastructure and assign any values """
 
         if ds is None:
             raise AnsibleAssertionError('ds (%s) should not be None but it is.' % ds)
@@ -197,10 +198,10 @@ class FieldAttributeBase:
         return value
 
     def _validate_attributes(self, ds):
-        '''
+        """
         Ensures that there are no keys in the datastructure which do
         not map to attributes for this object.
-        '''
+        """
 
         valid_attrs = frozenset(self.fattributes)
         for key in ds:
@@ -208,7 +209,7 @@ class FieldAttributeBase:
                 raise AnsibleParserError("'%s' is not a valid attribute for a %s" % (key, self.__class__.__name__), obj=ds)
 
     def validate(self, all_vars=None):
-        ''' validation that is done at parse time, not load time '''
+        """ validation that is done at parse time, not load time """
         all_vars = {} if all_vars is None else all_vars
 
         if not self._validated:
@@ -386,13 +387,13 @@ class FieldAttributeBase:
         return fq_group_name, resolved_actions
 
     def _resolve_action(self, action_name, mandatory=True):
-        context = module_loader.find_plugin_with_context(action_name)
+        context = module_loader.find_plugin_with_context(action_name, ignore_deprecated=(not mandatory))
         if context.resolved and not context.action_plugin:
-            prefer = action_loader.find_plugin_with_context(action_name)
+            prefer = action_loader.find_plugin_with_context(action_name, ignore_deprecated=(not mandatory))
             if prefer.resolved:
                 context = prefer
         elif not context.resolved:
-            context = action_loader.find_plugin_with_context(action_name)
+            context = action_loader.find_plugin_with_context(action_name, ignore_deprecated=(not mandatory))
 
         if context.resolved:
             return context.resolved_fqcn
@@ -401,20 +402,20 @@ class FieldAttributeBase:
         display.vvvvv("Could not resolve action %s in module_defaults" % action_name)
 
     def squash(self):
-        '''
+        """
         Evaluates all attributes and sets them to the evaluated version,
         so that all future accesses of attributes do not need to evaluate
         parent attributes.
-        '''
+        """
         if not self._squashed:
             for name in self.fattributes:
                 setattr(self, name, getattr(self, name))
             self._squashed = True
 
     def copy(self):
-        '''
+        """
         Create a copy of this object and return it.
-        '''
+        """
 
         try:
             new_me = self.__class__()
@@ -440,7 +441,13 @@ class FieldAttributeBase:
         if attribute.isa == 'string':
             value = to_text(value)
         elif attribute.isa == 'int':
-            value = int(value)
+            if not isinstance(value, int):
+                try:
+                    if (decimal_value := decimal.Decimal(value)) != (int_value := int(decimal_value)):
+                        raise decimal.DecimalException(f'Floating-point value {value!r} would be truncated.')
+                    value = int_value
+                except decimal.DecimalException as e:
+                    raise ValueError from e
         elif attribute.isa == 'float':
             value = float(value)
         elif attribute.isa == 'bool':
@@ -490,7 +497,7 @@ class FieldAttributeBase:
         return value
 
     def set_to_context(self, name):
-        ''' set to parent inherited value or Sentinel as appropriate'''
+        """ set to parent inherited value or Sentinel as appropriate"""
 
         attribute = self.fattributes[name]
         if isinstance(attribute, NonInheritableFieldAttribute):
@@ -504,11 +511,11 @@ class FieldAttributeBase:
                 setattr(self, name, Sentinel)
 
     def post_validate(self, templar):
-        '''
+        """
         we can't tell that everything is of the right type until we have
         all the variables.  Run basic types (from isa) as well as
         any _post_validate_<foo> functions.
-        '''
+        """
 
         # save the omit value for later checking
         omit_value = templar.available_variables.get('omit')
@@ -560,24 +567,22 @@ class FieldAttributeBase:
                 setattr(self, name, value)
             except (TypeError, ValueError) as e:
                 value = getattr(self, name)
-                raise AnsibleParserError("the field '%s' has an invalid value (%s), and could not be converted to an %s."
-                                         "The error was: %s" % (name, value, attribute.isa, e), obj=self.get_ds(), orig_exc=e)
+                raise AnsibleParserError(f"the field '{name}' has an invalid value ({value!r}), and could not be converted to {attribute.isa}.",
+                                         obj=self.get_ds(), orig_exc=e)
             except (AnsibleUndefinedVariable, UndefinedError) as e:
                 if templar._fail_on_undefined_errors and name != 'name':
                     if name == 'args':
-                        msg = "The task includes an option with an undefined variable. The error was: %s" % (to_native(e))
+                        msg = "The task includes an option with an undefined variable."
                     else:
-                        msg = "The field '%s' has an invalid value, which includes an undefined variable. The error was: %s" % (name, to_native(e))
+                        msg = f"The field '{name}' has an invalid value, which includes an undefined variable."
                     raise AnsibleParserError(msg, obj=self.get_ds(), orig_exc=e)
 
         self._finalized = True
 
     def _load_vars(self, attr, ds):
-        '''
-        Vars in a play can be specified either as a dictionary directly, or
-        as a list of dictionaries. If the later, this method will turn the
-        list into a single dictionary.
-        '''
+        """
+        Vars in a play must be specified as a dictionary.
+        """
 
         def _validate_variable_keys(ds):
             for key in ds:
@@ -588,21 +593,6 @@ class FieldAttributeBase:
             if isinstance(ds, dict):
                 _validate_variable_keys(ds)
                 return combine_vars(self.vars, ds)
-            elif isinstance(ds, list):
-                display.deprecated(
-                    (
-                        'Specifying a list of dictionaries for vars is deprecated in favor of '
-                        'specifying a dictionary.'
-                    ),
-                    version='2.18'
-                )
-                all_vars = self.vars
-                for item in ds:
-                    if not isinstance(item, dict):
-                        raise ValueError
-                    _validate_variable_keys(item)
-                    all_vars = combine_vars(all_vars, item)
-                return all_vars
             elif ds is None:
                 return {}
             else:
@@ -614,11 +604,11 @@ class FieldAttributeBase:
             raise AnsibleParserError("Invalid variable name in vars specified for %s: %s" % (self.__class__.__name__, e), obj=ds, orig_exc=e)
 
     def _extend_value(self, value, new_value, prepend=False):
-        '''
+        """
         Will extend the value given with new_value (and will turn both
         into lists if they are not so already). The values are run through
         a set to remove duplicate values.
-        '''
+        """
 
         if not isinstance(value, list):
             value = [value]
@@ -639,9 +629,9 @@ class FieldAttributeBase:
         return [i for i, dummy in itertools.groupby(combined) if i is not None]
 
     def dump_attrs(self):
-        '''
+        """
         Dumps all attributes to a dictionary
-        '''
+        """
         attrs = {}
         for (name, attribute) in self.fattributes.items():
             attr = getattr(self, name)
@@ -652,9 +642,9 @@ class FieldAttributeBase:
         return attrs
 
     def from_attrs(self, attrs):
-        '''
+        """
         Loads attributes from a dictionary
-        '''
+        """
         for (attr, value) in attrs.items():
             if attr in self.fattributes:
                 attribute = self.fattributes[attr]
@@ -673,13 +663,13 @@ class FieldAttributeBase:
         self._squashed = True
 
     def serialize(self):
-        '''
+        """
         Serializes the object derived from the base object into
         a dictionary of values. This only serializes the field
         attributes for the object, so this may need to be overridden
         for any classes which wish to add additional items not stored
         as field attributes.
-        '''
+        """
 
         repr = self.dump_attrs()
 
@@ -691,12 +681,12 @@ class FieldAttributeBase:
         return repr
 
     def deserialize(self, data):
-        '''
+        """
         Given a dictionary of values, load up the field attributes for
         this object. As with serialize(), if there are any non-field
         attribute data members, this method will need to be overridden
         and extended.
-        '''
+        """
 
         if not isinstance(data, dict):
             raise AnsibleAssertionError('data (%s) should be a dict but is a %s' % (data, type(data)))
@@ -730,7 +720,7 @@ class Base(FieldAttributeBase):
 
     # flags and misc. settings
     environment = FieldAttribute(isa='list', extend=True, prepend=True)
-    no_log = FieldAttribute(isa='bool')
+    no_log = FieldAttribute(isa='bool', default=C.DEFAULT_NO_LOG)
     run_once = FieldAttribute(isa='bool')
     ignore_errors = FieldAttribute(isa='bool')
     ignore_unreachable = FieldAttribute(isa='bool')
@@ -754,7 +744,7 @@ class Base(FieldAttributeBase):
     DEPRECATED_ATTRIBUTES = []  # type: list[str]
 
     def get_path(self):
-        ''' return the absolute path of the playbook object and its line number '''
+        """ return the absolute path of the playbook object and its line number """
 
         path = ""
         try:
@@ -774,10 +764,10 @@ class Base(FieldAttributeBase):
             return None
 
     def get_search_path(self):
-        '''
+        """
         Return the list of paths you should search for files, in order.
         This follows role/playbook dependency chain.
-        '''
+        """
         path_stack = []
 
         dep_chain = self.get_dep_chain()

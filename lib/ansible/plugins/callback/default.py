@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-DOCUMENTATION = '''
+DOCUMENTATION = """
     name: default
     type: stdout
     short_description: default Ansible screen output
@@ -16,7 +16,7 @@ DOCUMENTATION = '''
       - result_format_callback
     requirements:
       - set as stdout in configuration
-'''
+"""
 
 
 from ansible import constants as C
@@ -29,10 +29,10 @@ from ansible.utils.fqcn import add_internal_fqcns
 
 class CallbackModule(CallbackBase):
 
-    '''
+    """
     This is the default callback interface, which simply prints messages
     to stdout when new callback events are received.
-    '''
+    """
 
     CALLBACK_VERSION = 2.0
     CALLBACK_TYPE = 'stdout'
@@ -293,7 +293,7 @@ class CallbackModule(CallbackBase):
         label = self._get_item_label(included_file._vars)
         if label:
             msg += " => (item=%s)" % label
-        self._display.display(msg, color=C.COLOR_SKIP)
+        self._display.display(msg, color=C.COLOR_INCLUDED)
 
     def v2_playbook_on_stats(self, stats):
         self._display.banner("PLAY RECAP")

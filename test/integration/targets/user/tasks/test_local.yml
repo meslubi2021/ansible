@@ -39,6 +39,15 @@
   tags:
     - user_test_local_mode
 
+- name: Ensure no local_ansibulluser
+  user:
+    name: local_ansibulluser
+    state: absent
+    local: yes
+    remove: true
+  tags:
+    - user_test_local_mode
+
 - name: Create local_ansibulluser
   user:
     name: local_ansibulluser
@@ -224,8 +233,6 @@
 - name: Ensure warnings were displayed properly
   assert:
     that:
-      - local_user_test_1['warnings'] | length > 0
-      - local_user_test_1['warnings'] | first is search('The local user account may already exist')
       - local_user_test_5['warnings'] is search("'append' is set, but no 'groups' are specified. Use 'groups'")
       - local_existing['warnings'] is not defined
   when: ansible_facts.system in ['Linux']

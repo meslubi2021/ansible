@@ -47,10 +47,10 @@ class PlaybookInclude(Base, Conditional, Taggable):
         return PlaybookInclude().load_data(ds=data, basedir=basedir, variable_manager=variable_manager, loader=loader)
 
     def load_data(self, ds, variable_manager=None, loader=None, basedir=None):
-        '''
+        """
         Overrides the base load_data(), as we're actually going to return a new
         Playbook() object rather than a PlaybookInclude object
-        '''
+        """
 
         # import here to avoid a dependency loop
         from ansible.playbook import Playbook
@@ -90,7 +90,7 @@ class PlaybookInclude(Base, Conditional, Taggable):
             # it is a collection playbook, setup default collections
             AnsibleCollectionConfig.default_collection = playbook_collection
         else:
-            # it is NOT a collection playbook, setup adjecent paths
+            # it is NOT a collection playbook, setup adjacent paths
             AnsibleCollectionConfig.playbook_paths.append(os.path.dirname(os.path.abspath(to_bytes(playbook, errors='surrogate_or_strict'))))
 
         pb._load_playbook_data(file_name=playbook, variable_manager=variable_manager, vars=self.vars.copy())
@@ -122,10 +122,10 @@ class PlaybookInclude(Base, Conditional, Taggable):
         return pb
 
     def preprocess_data(self, ds):
-        '''
-        Regorganizes the data for a PlaybookInclude datastructure to line
+        """
+        Reorganizes the data for a PlaybookInclude datastructure to line
         up with what we expect the proper attributes to be
-        '''
+        """
 
         if not isinstance(ds, dict):
             raise AnsibleAssertionError('ds (%s) should be a dict but was a %s' % (ds, type(ds)))
@@ -152,9 +152,9 @@ class PlaybookInclude(Base, Conditional, Taggable):
         return super(PlaybookInclude, self).preprocess_data(new_ds)
 
     def _preprocess_import(self, ds, new_ds, k, v):
-        '''
+        """
         Splits the playbook import line up into filename and parameters
-        '''
+        """
         if v is None:
             raise AnsibleParserError("playbook import parameter is missing", obj=ds)
         elif not isinstance(v, string_types):

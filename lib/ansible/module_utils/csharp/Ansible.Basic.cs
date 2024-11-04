@@ -61,6 +61,7 @@ namespace Ansible.Basic
         private Dictionary<string, string> passVars = new Dictionary<string, string>()
         {
             // null values means no mapping, not used in Ansible.Basic.AnsibleModule
+            // keep in sync with python counterpart in lib/ansible/module_utils/common/parameters.py
             { "check_mode", "CheckMode" },
             { "debug", "DebugMode" },
             { "diff", "DiffMode" },
@@ -74,6 +75,7 @@ namespace Ansible.Basic
             { "socket", null },
             { "string_conversion_action", null },
             { "syslog_facility", null },
+            { "target_log_info", "TargetLogInfo"},
             { "tmpdir", "tmpdir" },
             { "verbosity", "Verbosity" },
             { "version", "AnsibleVersion" },
@@ -127,6 +129,7 @@ namespace Ansible.Basic
         public bool KeepRemoteFiles { get; private set; }
         public string ModuleName { get; private set; }
         public bool NoLog { get; private set; }
+        public string TargetLogInfo { get; private set; }
         public int Verbosity { get; private set; }
         public string AnsibleVersion { get; private set; }
 
@@ -259,6 +262,7 @@ namespace Ansible.Basic
             DiffMode = false;
             KeepRemoteFiles = false;
             ModuleName = "undefined win module";
+            TargetLogInfo = "";
             NoLog = (bool)argumentSpec["no_log"];
             Verbosity = 0;
             AppDomain.CurrentDomain.ProcessExit += CleanupFiles;
@@ -374,9 +378,20 @@ namespace Ansible.Basic
                     logSource = "Application";
                 }
             }
+
+            if (String.IsNullOrWhiteSpace(TargetLogInfo))
+            {
+                message = String.Format("{0} - {1}", ModuleName, message);
+            }
+            else
+            {
+                message = String.Format("{0} {1} - {2}", ModuleName, TargetLogInfo, message);
+            }
+
             if (sanitise)
+            {
                 message = (string)RemoveNoLogValues(message, noLogValues);
-            message = String.Format("{0} - {1}", ModuleName, message);
+            }
 
             using (EventLog eventLog = new EventLog("Application"))
             {
@@ -1010,7 +1025,16 @@ namespace Ansible.Basic
             foreach (DictionaryEntry entry in param)
             {
                 string paramKey = (string)entry.Key;
-                if (!legalInputs.Contains(paramKey, StringComparer.OrdinalIgnoreCase))
+                if (paramKey == "_ansible_exec_wrapper_warnings")
+                {
+                    // Special key used in module_powershell_wrapper to pass
+                    // along any warnings that should be returned back to
+                    // Ansible.
+                    removedParameters.Add(paramKey);
+                    foreach (string warning in (IList<string>)entry.Value)
+                        Warn(warning);
+                }
+                else if (!legalInputs.Contains(paramKey, StringComparer.OrdinalIgnoreCase))
                     unsupportedParameters.Add(paramKey);
                 else if (!legalInputs.Contains(paramKey))
                     // For backwards compatibility we do not care about the case but we need to warn the users as this will

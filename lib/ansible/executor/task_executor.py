@@ -4,23 +4,24 @@
 from __future__ import annotations
 
 import os
-import pty
 import time
 import json
+import pathlib
 import signal
 import subprocess
 import sys
-import termios
 import traceback
 
 from ansible import constants as C
+from ansible.cli import scripts
 from ansible.errors import AnsibleError, AnsibleParserError, AnsibleUndefinedVariable, AnsibleConnectionFailure, AnsibleActionFail, AnsibleActionSkip
 from ansible.executor.task_result import TaskResult
 from ansible.executor.module_common import get_action_args_with_defaults
 from ansible.module_utils.parsing.convert_bool import boolean
 from ansible.module_utils.six import binary_type
 from ansible.module_utils.common.text.converters import to_text, to_native
-from ansible.module_utils.connection import write_to_file_descriptor
+from ansible.module_utils.connection import write_to_stream
+from ansible.module_utils.six import string_types
 from ansible.playbook.conditional import Conditional
 from ansible.playbook.task import Task
 from ansible.plugins import get_plugin_class
@@ -31,7 +32,7 @@ from ansible.utils.listify import listify_lookup_plugin_terms
 from ansible.utils.unsafe_proxy import to_unsafe_text, wrap_var
 from ansible.vars.clean import namespace_facts, clean_facts
 from ansible.utils.display import Display
-from ansible.utils.vars import combine_vars, isidentifier
+from ansible.utils.vars import combine_vars
 
 display = Display()
 
@@ -42,18 +43,28 @@ __all__ = ['TaskExecutor']
 
 
 class TaskTimeoutError(BaseException):
-    pass
+    def __init__(self, message="", frame=None):
+
+        if frame is not None:
+            orig = frame
+            root = pathlib.Path(__file__).parent
+            while not pathlib.Path(frame.f_code.co_filename).is_relative_to(root):
+                frame = frame.f_back
+
+            self.frame = 'Interrupted at %s called from %s' % (orig, frame)
+
+        super(TaskTimeoutError, self).__init__(message)
 
 
 def task_timeout(signum, frame):
-    raise TaskTimeoutError
+    raise TaskTimeoutError(frame=frame)
 
 
 def remove_omit(task_args, omit_token):
-    '''
+    """
     Remove args with a value equal to the ``omit_token`` recursively
     to align with now having suboptions in the argument_spec
-    '''
+    """
 
     if not isinstance(task_args, dict):
         return task_args
@@ -74,12 +85,12 @@ def remove_omit(task_args, omit_token):
 
 class TaskExecutor:
 
-    '''
+    """
     This is the main worker class for the executor pipeline, which
     handles loading an action plugin to actually dispatch the task to
     a given host. This class roughly corresponds to the old Runner()
     class.
-    '''
+    """
 
     def __init__(self, host, task, job_vars, play_context, new_stdin, loader, shared_loader_obj, final_q, variable_manager):
         self._host = host
@@ -97,12 +108,12 @@ class TaskExecutor:
         self._task.squash()
 
     def run(self):
-        '''
+        """
         The main executor entrypoint, where we determine if the specified
         task requires looping and either runs the task with self._run_loop()
         or self._execute(). After that, the returned results are parsed and
         returned as a dict.
-        '''
+        """
 
         display.debug("in run() - task %s" % self._task._uuid)
 
@@ -139,6 +150,7 @@ class TaskExecutor:
                         if 'unreachable' in item and item['unreachable']:
                             item_ignore_unreachable = item.pop('_ansible_ignore_unreachable')
                             if not res.get('unreachable'):
+                                res['unreachable'] = True
                                 self._task.ignore_unreachable = item_ignore_unreachable
                             elif self._task.ignore_unreachable and not item_ignore_unreachable:
                                 self._task.ignore_unreachable = item_ignore_unreachable
@@ -207,10 +219,10 @@ class TaskExecutor:
                 display.debug(u"error closing connection: %s" % to_text(e))
 
     def _get_loop_items(self):
-        '''
+        """
         Loads a lookup plugin to handle the with_* portion of a task (if specified),
         and returns the items result.
-        '''
+        """
 
         # get search path for this task to pass to lookup plugins
         self._job_vars['ansible_search_path'] = self._task.get_search_path()
@@ -255,11 +267,11 @@ class TaskExecutor:
         return items
 
     def _run_loop(self, items):
-        '''
+        """
         Runs the task with the loop items specified and collates the result
         into an array named 'results' which is inserted into the final result
         along with the item for which the loop ran.
-        '''
+        """
         task_vars = self._job_vars
         templar = Templar(loader=self._loader, variables=task_vars)
 
@@ -332,6 +344,13 @@ class TaskExecutor:
             (self._task, tmp_task) = (tmp_task, self._task)
             (self._play_context, tmp_play_context) = (tmp_play_context, self._play_context)
             res = self._execute(variables=task_vars)
+
+            if self._task.register:
+                # Ensure per loop iteration results are registered in case `_execute()`
+                # returns early (when conditional, failure, ...).
+                # This is needed in case the registered variable is used in the loop label template.
+                task_vars[self._task.register] = res
+
             task_fields = self._task.dump_attrs()
             (self._task, tmp_task) = (tmp_task, self._task)
             (self._play_context, tmp_play_context) = (tmp_play_context, self._play_context)
@@ -362,12 +381,17 @@ class TaskExecutor:
                     'msg': 'Failed to template loop_control.label: %s' % to_text(e)
                 })
 
+            # if plugin is loaded, get resolved name, otherwise leave original task connection
+            if self._connection and not isinstance(self._connection, string_types):
+                task_fields['connection'] = getattr(self._connection, 'ansible_name')
+
             tr = TaskResult(
                 self._host.name,
                 self._task._uuid,
                 res,
                 task_fields=task_fields,
             )
+
             if tr.is_failed() or tr.is_unreachable():
                 self._final_q.send_callback('v2_runner_item_on_failed', tr)
             elif tr.is_skipped():
@@ -379,6 +403,19 @@ class TaskExecutor:
                     self._final_q.send_callback('v2_runner_item_on_ok', tr)
 
             results.append(res)
+
+            # break loop if break_when conditions are met
+            if self._task.loop_control and self._task.loop_control.break_when:
+                cond = Conditional(loader=self._loader)
+                cond.when = self._task.loop_control.get_validated_value(
+                    'break_when', self._task.loop_control.fattributes.get('break_when'), self._task.loop_control.break_when, templar
+                )
+                if cond.evaluate_conditional(templar, task_vars):
+                    # delete loop vars before exiting loop
+                    del task_vars[loop_var]
+                    break
+
+            # done with loop var, remove for next iteration
             del task_vars[loop_var]
 
             # clear 'connection related' plugin variables for next iteration
@@ -407,11 +444,7 @@ class TaskExecutor:
         """This method is responsible for effectively pre-validating Task.delegate_to and will
         happen before Task.post_validate is executed
         """
-        delegated_vars, delegated_host_name = self._variable_manager.get_delegated_vars_and_hostname(
-            templar,
-            self._task,
-            variables
-        )
+        delegated_vars, delegated_host_name = self._variable_manager.get_delegated_vars_and_hostname(templar, self._task, variables)
         # At the point this is executed it is safe to mutate self._task,
         # since `self._task` is either a copy referred to by `tmp_task` in `_run_loop`
         # or just a singular non-looped task
@@ -420,11 +453,11 @@ class TaskExecutor:
             variables.update(delegated_vars)
 
     def _execute(self, variables=None):
-        '''
+        """
         The primary workhorse of the executor system, this runs the task
         on the specified host (which may be the delegated_to host) and handles
         the retry/until and block rescue/always execution
-        '''
+        """
 
         if variables is None:
             variables = self._job_vars
@@ -644,7 +677,7 @@ class TaskExecutor:
                 return dict(unreachable=True, msg=to_text(e))
             except TaskTimeoutError as e:
                 msg = 'The %s action failed to execute in the expected time frame (%d) and was terminated' % (self._task.action, self._task.timeout)
-                return dict(failed=True, msg=msg)
+                return dict(failed=True, msg=msg, timedout={'frame': e.frame, 'period': self._task.timeout})
             finally:
                 if self._task.timeout:
                     signal.alarm(0)
@@ -652,8 +685,8 @@ class TaskExecutor:
                 self._handler.cleanup()
             display.debug("handler run complete")
 
-            # preserve no log
-            result["_ansible_no_log"] = no_log
+            # propagate no log to result- the action can set this, so only overwrite it with the task's value if missing or falsey
+            result["_ansible_no_log"] = bool(no_log or result.get('_ansible_no_log', False))
 
             if self._task.action not in C._ACTION_WITH_CLEAN_FACTS:
                 result = wrap_var(result)
@@ -661,9 +694,6 @@ class TaskExecutor:
             # update the local copy of vars with the registered value, if specified,
             # or any facts which may have been generated by the module execution
             if self._task.register:
-                if not isidentifier(self._task.register):
-                    raise AnsibleError("Invalid variable name in 'register' specified: '%s'" % self._task.register)
-
                 vars_copy[self._task.register] = result
 
             if self._task.async_val > 0:
@@ -829,9 +859,9 @@ class TaskExecutor:
         return result
 
     def _poll_async_result(self, result, templar, task_vars=None):
-        '''
+        """
         Polls for the specified JID to be complete
-        '''
+        """
 
         if task_vars is None:
             task_vars = self._job_vars
@@ -844,7 +874,12 @@ class TaskExecutor:
         # that (with a sleep for "poll" seconds between each retry) until the
         # async time limit is exceeded.
 
-        async_task = Task.load(dict(action='async_status', args={'jid': async_jid}, environment=self._task.environment))
+        async_task = Task.load(dict(
+            action='async_status',
+            args={'jid': async_jid},
+            check_mode=self._task.check_mode,
+            environment=self._task.environment,
+        ))
 
         # FIXME: this is no longer the case, normal takes care of all, see if this can just be generalized
         # Because this is an async task, the action handler is async. However,
@@ -916,6 +951,7 @@ class TaskExecutor:
                         'jid': async_jid,
                         'mode': 'cleanup',
                     },
+                    'check_mode': self._task.check_mode,
                     'environment': self._task.environment,
                 }
             )
@@ -941,10 +977,10 @@ class TaskExecutor:
         return become
 
     def _get_connection(self, cvars, templar, current_connection):
-        '''
+        """
         Reads the connection property for the host, and returns the
         correct connection object from the list of connection plugins
-        '''
+        """
 
         self._play_context.connection = current_connection
 
@@ -1046,7 +1082,7 @@ class TaskExecutor:
         # add extras if plugin supports them
         if getattr(self._connection, 'allow_extras', False):
             for k in variables:
-                if k.startswith('ansible_%s_' % self._connection._load_name) and k not in options:
+                if k.startswith('ansible_%s_' % self._connection.extras_prefix) and k not in options:
                     options['_extras'][k] = templar.template(variables[k])
 
         task_keys = self._task.dump_attrs()
@@ -1089,7 +1125,7 @@ class TaskExecutor:
 
         # deals with networking sub_plugins (network_cli/httpapi/netconf)
         sub = getattr(self._connection, '_sub_plugin', None)
-        if sub is not None and sub.get('type') != 'external':
+        if sub and sub.get('type') != 'external':
             plugin_type = get_plugin_class(sub.get("obj"))
             varnames.extend(self._set_plugin_options(plugin_type, variables, templar, task_keys))
         sub_conn = getattr(self._connection, 'ssh_type_conn', None)
@@ -1099,15 +1135,15 @@ class TaskExecutor:
         return varnames
 
     def _get_action_handler(self, templar):
-        '''
+        """
         Returns the correct action plugin to handle the requestion task action
-        '''
+        """
         return self._get_action_handler_with_module_context(templar)[0]
 
     def _get_action_handler_with_module_context(self, templar):
-        '''
+        """
         Returns the correct action plugin to handle the requestion task action and the module context
-        '''
+        """
         module_collection, separator, module_name = self._task.action.rpartition(".")
         module_prefix = module_name.split('_')[0]
         if module_collection:
@@ -1177,26 +1213,19 @@ class TaskExecutor:
         return handler, module
 
 
+CLI_STUB_NAME = 'ansible_connection_cli_stub.py'
+
+
 def start_connection(play_context, options, task_uuid):
-    '''
+    """
     Starts the persistent connection
-    '''
-    candidate_paths = [C.ANSIBLE_CONNECTION_PATH or os.path.dirname(sys.argv[0])]
-    candidate_paths.extend(os.environ.get('PATH', '').split(os.pathsep))
-    for dirname in candidate_paths:
-        ansible_connection = os.path.join(dirname, 'ansible-connection')
-        if os.path.isfile(ansible_connection):
-            display.vvvv("Found ansible-connection at path {0}".format(ansible_connection))
-            break
-    else:
-        raise AnsibleError("Unable to find location of 'ansible-connection'. "
-                           "Please set or check the value of ANSIBLE_CONNECTION_PATH")
+    """
 
     env = os.environ.copy()
     env.update({
         # HACK; most of these paths may change during the controller's lifetime
         # (eg, due to late dynamic role includes, multi-playbook execution), without a way
-        # to invalidate/update, ansible-connection won't always see the same plugins the controller
+        # to invalidate/update, the persistent connection helper won't always see the same plugins the controller
         # can.
         'ANSIBLE_BECOME_PLUGINS': become_loader.print_paths(),
         'ANSIBLE_CLICONF_PLUGINS': cliconf_loader.print_paths(),
@@ -1209,30 +1238,19 @@ def start_connection(play_context, options, task_uuid):
     verbosity = []
     if display.verbosity:
         verbosity.append('-%s' % ('v' * display.verbosity))
-    python = sys.executable
-    master, slave = pty.openpty()
+
+    if not (cli_stub_path := C.config.get_config_value('_ANSIBLE_CONNECTION_PATH')):
+        cli_stub_path = str(pathlib.Path(scripts.__file__).parent / CLI_STUB_NAME)
+
     p = subprocess.Popen(
-        [python, ansible_connection, *verbosity, to_text(os.getppid()), to_text(task_uuid)],
-        stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+        [sys.executable, cli_stub_path, *verbosity, to_text(os.getppid()), to_text(task_uuid)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
     )
-    os.close(slave)
 
-    # We need to set the pty into noncanonical mode. This ensures that we
-    # can receive lines longer than 4095 characters (plus newline) without
-    # truncating.
-    old = termios.tcgetattr(master)
-    new = termios.tcgetattr(master)
-    new[3] = new[3] & ~termios.ICANON
+    write_to_stream(p.stdin, options)
+    write_to_stream(p.stdin, play_context.serialize())
 
-    try:
-        termios.tcsetattr(master, termios.TCSANOW, new)
-        write_to_file_descriptor(master, options)
-        write_to_file_descriptor(master, play_context.serialize())
-
-        (stdout, stderr) = p.communicate()
-    finally:
-        termios.tcsetattr(master, termios.TCSANOW, old)
-    os.close(master)
+    (stdout, stderr) = p.communicate()
 
     if p.returncode == 0:
         result = json.loads(to_text(stdout, errors='surrogate_then_replace'))

@@ -20,6 +20,8 @@ from .util import (
     SubprocessError,
     cache,
     OutputStream,
+    InternalError,
+    format_command_output,
 )
 
 from .util_common import (
@@ -47,7 +49,7 @@ DOCKER_COMMANDS = [
     'podman',
 ]
 
-UTILITY_IMAGE = 'quay.io/ansible/ansible-test-utility-container:2.0.0'
+UTILITY_IMAGE = 'quay.io/ansible/ansible-test-utility-container:3.1.0'
 
 # Max number of open files in a docker container.
 # Passed with --ulimit option to the docker run command.
@@ -300,7 +302,7 @@ def detect_host_properties(args: CommonConfig) -> ContainerHostProperties:
     options = ['--volume', '/sys/fs/cgroup:/probe:ro']
     cmd = ['sh', '-c', ' && echo "-" && '.join(multi_line_commands)]
 
-    stdout = run_utility_container(args, 'ansible-test-probe', cmd, options)[0]
+    stdout, stderr = run_utility_container(args, 'ansible-test-probe', cmd, options)
 
     if args.explain:
         return ContainerHostProperties(
@@ -312,6 +314,12 @@ def detect_host_properties(args: CommonConfig) -> ContainerHostProperties:
         )
 
     blocks = stdout.split('\n-\n')
+
+    if len(blocks) != len(multi_line_commands):
+        message = f'Unexpected probe output. Expected {len(multi_line_commands)} blocks but found {len(blocks)}.\n'
+        message += format_command_output(stdout, stderr)
+
+        raise InternalError(message.strip())
 
     values = blocks[0].split('\n')
 

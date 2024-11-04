@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 
-DOCUMENTATION = r'''
+DOCUMENTATION = r"""
 ---
 module: replace
 author: Evan Kaufman (@EvanK)
@@ -74,6 +74,7 @@ options:
       - Uses Python regular expressions; see
         U(https://docs.python.org/3/library/re.html).
       - Uses DOTALL, which means the V(.) special character I(can match newlines).
+      - Does not use MULTILINE, so V(^) and V($) will only match the beginning and end of the file.
     type: str
     version_added: "2.4"
   before:
@@ -83,6 +84,7 @@ options:
       - Uses Python regular expressions; see
         U(https://docs.python.org/3/library/re.html).
       - Uses DOTALL, which means the V(.) special character I(can match newlines).
+      - Does not use MULTILINE, so V(^) and V($) will only match the beginning and end of the file.
     type: str
     version_added: "2.4"
   backup:
@@ -91,10 +93,6 @@ options:
         get the original file back if you somehow clobbered it incorrectly.
     type: bool
     default: no
-  others:
-    description:
-      - All arguments accepted by the M(ansible.builtin.file) module also work here.
-    type: str
   encoding:
     description:
       - The character encoding for reading and writing the file.
@@ -108,9 +106,9 @@ notes:
     See U(https://github.com/ansible/ansible/issues/31354) for details.
   - Option O(ignore:follow) has been removed in Ansible 2.5, because this module modifies the contents of the file
     so O(ignore:follow=no) does not make sense.
-'''
+"""
 
-EXAMPLES = r'''
+EXAMPLES = r"""
 - name: Replace old hostname with new hostname (requires Ansible >= 2.4)
   ansible.builtin.replace:
     path: /etc/hosts
@@ -124,7 +122,7 @@ EXAMPLES = r'''
     regexp: '^(.+)$'
     replace: '# \1'
 
-- name: Replace before the expression till the begin of the file (requires Ansible >= 2.4)
+- name: Replace before the expression from the beginning of the file (requires Ansible >= 2.4)
   ansible.builtin.replace:
     path: /etc/apache2/sites-available/default.conf
     before: '# live site config'
@@ -133,10 +131,11 @@ EXAMPLES = r'''
 
 # Prior to Ansible 2.7.10, using before and after in combination did the opposite of what was intended.
 # see https://github.com/ansible/ansible/issues/31354 for details.
+# Note (?m) which turns on MULTILINE mode so ^ matches any line's beginning
 - name: Replace between the expressions (requires Ansible >= 2.4)
   ansible.builtin.replace:
     path: /etc/hosts
-    after: '<VirtualHost [*]>'
+    after: '(?m)^<VirtualHost [*]>'
     before: '</VirtualHost>'
     regexp: '^(.+)$'
     replace: '# \1'
@@ -176,9 +175,9 @@ EXAMPLES = r'''
     path: /etc/ssh/sshd_config
     regexp: '^(?P<dctv>ListenAddress[ ]+)(?P<host>[^\n]+)$'
     replace: '#\g<dctv>\g<host>\n\g<dctv>0.0.0.0'
-'''
+"""
 
-RETURN = r'''#'''
+RETURN = r"""#"""
 
 import os
 import re
@@ -192,9 +191,8 @@ from ansible.module_utils.basic import AnsibleModule
 def write_changes(module, contents, path):
 
     tmpfd, tmpfile = tempfile.mkstemp(dir=module.tmpdir)
-    f = os.fdopen(tmpfd, 'wb')
-    f.write(contents)
-    f.close()
+    with os.fdopen(tmpfd, 'wb') as f:
+        f.write(contents)
 
     validate = module.params.get('validate', None)
     valid = not validate
@@ -243,6 +241,7 @@ def main():
     path = params['path']
     encoding = params['encoding']
     res_args = dict(rc=0)
+    contents = None
 
     params['after'] = to_text(params['after'], errors='surrogate_or_strict', nonstring='passthru')
     params['before'] = to_text(params['before'], errors='surrogate_or_strict', nonstring='passthru')

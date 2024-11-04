@@ -6,10 +6,11 @@ from __future__ import annotations
 
 import json
 import sys
+import typing as t
 
 # Used for determining if the system is running a new enough python version
 # and should only restrict on our documented minimum versions
-_PY_MIN = (3, 7)
+_PY_MIN = (3, 8)
 
 if sys.version_info < _PY_MIN:
     print(json.dumps(dict(
@@ -25,7 +26,6 @@ if sys.version_info < _PY_MIN:
 import __main__
 import atexit
 import errno
-import datetime
 import grp
 import fcntl
 import locale
@@ -37,15 +37,13 @@ import select
 import selectors
 import shlex
 import shutil
-import signal
 import stat
 import subprocess
 import tempfile
 import time
 import traceback
-import types
 
-from itertools import chain, repeat
+from functools import reduce
 
 try:
     import syslog
@@ -94,21 +92,9 @@ import hashlib
 
 def _get_available_hash_algorithms():
     """Return a dictionary of available hash function names and their associated function."""
-    try:
-        # Algorithms available in Python 2.7.9+ and Python 3.2+
-        # https://docs.python.org/2.7/library/hashlib.html#hashlib.algorithms_available
-        # https://docs.python.org/3.2/library/hashlib.html#hashlib.algorithms_available
-        algorithm_names = hashlib.algorithms_available
-    except AttributeError:
-        # Algorithms in Python 2.7.x (used only for Python 2.7.0 through 2.7.8)
-        # https://docs.python.org/2.7/library/hashlib.html#hashlib.hashlib.algorithms
-        algorithm_names = set(hashlib.algorithms)
-
     algorithms = {}
-
-    for algorithm_name in algorithm_names:
+    for algorithm_name in hashlib.algorithms_available:
         algorithm_func = getattr(hashlib, algorithm_name, None)
-
         if algorithm_func:
             try:
                 # Make sure the algorithm is actually available for use.
@@ -135,12 +121,13 @@ from ansible.module_utils.common.locale import get_best_parsable_locale
 from ansible.module_utils.common.process import get_bin_path
 from ansible.module_utils.common.file import (
     _PERM_BITS as PERM_BITS,
-    _EXEC_PERM_BITS as EXEC_PERM_BITS,
     _DEFAULT_PERM as DEFAULT_PERM,
     is_executable,
     format_attributes,
     get_flags_from_attributes,
     FILE_ATTRIBUTES,
+    S_IXANY,
+    S_IRWU_RWG_RWO,
 )
 from ansible.module_utils.common.sys_info import (
     get_distribution,
@@ -157,17 +144,6 @@ from ansible.module_utils.common.parameters import (
 )
 
 from ansible.module_utils.errors import AnsibleFallbackNotFound, AnsibleValidationErrorMultiple, UnsupportedError
-from ansible.module_utils.six import (
-    PY2,
-    PY3,
-    b,
-    binary_type,
-    integer_types,
-    iteritems,
-    string_types,
-    text_type,
-)
-from ansible.module_utils.six.moves import map, reduce, shlex_quote
 from ansible.module_utils.common.validation import (
     check_missing_parameters,
     safe_eval,
@@ -188,22 +164,6 @@ SEQUENCETYPE = frozenset, KeysView, Sequence
 PASSWORD_MATCH = re.compile(r'^(?:.+[-_\s])?pass(?:[-_\s]?(?:word|phrase|wrd|wd)?)(?:[-_\s].+)?$', re.I)
 
 imap = map
-
-try:
-    # Python 2
-    unicode  # type: ignore[used-before-def]  # pylint: disable=used-before-assignment
-except NameError:
-    # Python 3
-    unicode = text_type
-
-try:
-    # Python 2
-    basestring  # type: ignore[used-before-def,has-type]  # pylint: disable=used-before-assignment
-except NameError:
-    # Python 3
-    basestring = string_types
-
-# End of deprecated names
 
 # Internal global holding passed in params.  This is consulted in case
 # multiple AnsibleModules are created.  Otherwise each AnsibleModule would
@@ -240,14 +200,14 @@ PERMS_RE = re.compile(r'^[rwxXstugo]*$')
 #
 
 def get_platform():
-    '''
+    """
     **Deprecated** Use :py:func:`platform.system` directly.
 
     :returns: Name of the platform the module is running on in a native string
 
     Returns a native string that labels the platform ("Linux", "Solaris", etc). Currently, this is
     the result of calling :py:func:`platform.system`.
-    '''
+    """
     return platform.system()
 
 # End deprecated functions
@@ -272,7 +232,7 @@ def get_all_subclasses(cls):
 
 
 def heuristic_log_sanitize(data, no_log_values=None):
-    ''' Remove strings that look like passwords from log messages '''
+    """ Remove strings that look like passwords from log messages """
     # Currently filters:
     # user:pass@foo/whatever and http://username:pass@wherever/foo
     # This code has false positives and consumes parts of logs that are
@@ -337,7 +297,7 @@ def heuristic_log_sanitize(data, no_log_values=None):
 
 
 def _load_params():
-    ''' read the modules parameters and store them globally.
+    """ read the modules parameters and store them globally.
 
     This function may be needed for certain very dynamic custom modules which
     want to process the parameters that are being handed the module.  Since
@@ -346,7 +306,7 @@ def _load_params():
     will try not to break it gratuitously.  It is certainly more future-proof
     to call this function and consume its outputs than to implement the logic
     inside it as a copy in your own code.
-    '''
+    """
     global _ANSIBLE_ARGS
     if _ANSIBLE_ARGS is not None:
         buffer = _ANSIBLE_ARGS
@@ -357,19 +317,13 @@ def _load_params():
         # We control the args and we pass them as utf8
         if len(sys.argv) > 1:
             if os.path.isfile(sys.argv[1]):
-                fd = open(sys.argv[1], 'rb')
-                buffer = fd.read()
-                fd.close()
+                with open(sys.argv[1], 'rb') as fd:
+                    buffer = fd.read()
             else:
-                buffer = sys.argv[1]
-                if PY3:
-                    buffer = buffer.encode('utf-8', errors='surrogateescape')
+                buffer = sys.argv[1].encode('utf-8', errors='surrogateescape')
         # default case, read from stdin
         else:
-            if PY2:
-                buffer = sys.stdin.read()
-            else:
-                buffer = sys.stdin.buffer.read()
+            buffer = sys.stdin.buffer.read()
         _ANSIBLE_ARGS = buffer
 
     try:
@@ -378,9 +332,6 @@ def _load_params():
         # This helper is used too early for fail_json to work.
         print('\n{"msg": "Error: Module unable to decode stdin/parameters as valid JSON. Unable to parse what parameters were passed", "failed": true}')
         sys.exit(1)
-
-    if PY2:
-        params = json_dict_unicode_to_bytes(params)
 
     try:
         return params['ANSIBLE_MODULE_ARGS']
@@ -412,13 +363,13 @@ class AnsibleModule(object):
                  required_one_of=None, add_file_common_args=False,
                  supports_check_mode=False, required_if=None, required_by=None):
 
-        '''
+        """
         Common code for quickly building an ansible module in Python
         (although you can write modules with anything that can return JSON).
 
         See :ref:`developing_modules_general` for a general introduction
         and :ref:`developing_program_flow_modules` for more detailed explanation.
-        '''
+        """
 
         self._name = os.path.basename(__file__)  # initialize name until we can parse from options
         self.argument_spec = argument_spec
@@ -507,7 +458,7 @@ class AnsibleModule(object):
         self._selinux_mls_enabled = None
         self._selinux_initial_context = None
 
-        # finally, make sure we're in a sane working dir
+        # finally, make sure we're in a logical working dir
         self._set_cwd()
 
     @property
@@ -565,13 +516,13 @@ class AnsibleModule(object):
             self.log('[DEPRECATION WARNING] %s %s' % (msg, version))
 
     def load_file_common_arguments(self, params, path=None):
-        '''
+        """
         many modules deal with files, this encapsulates common
         options that the file module accepts such that it is directly
         available to all modules and they can share code.
 
         Allows to overwrite the path/dest module argument by providing path.
-        '''
+        """
 
         if path is None:
             path = params.get('path', params.get('dest', None))
@@ -684,12 +635,12 @@ class AnsibleModule(object):
         return (uid, gid)
 
     def find_mount_point(self, path):
-        '''
+        """
             Takes a path and returns its mount point
 
         :param path: a string type with a filesystem path
         :returns: the path to the mount point as a text type
-        '''
+        """
 
         b_path = os.path.realpath(to_bytes(os.path.expanduser(os.path.expandvars(path)), errors='surrogate_or_strict'))
         while not os.path.ismount(b_path):
@@ -703,9 +654,8 @@ class AnsibleModule(object):
         NFS or other 'special' fs  mount point, otherwise the return will be (False, None).
         """
         try:
-            f = open('/proc/mounts', 'r')
-            mount_data = f.readlines()
-            f.close()
+            with open('/proc/mounts', 'r') as f:
+                mount_data = f.readlines()
         except Exception:
             return (False, None)
 
@@ -958,7 +908,7 @@ class AnsibleModule(object):
             attr_mod = attributes[0]
             attributes = attributes[1:]
 
-        if existing.get('attr_flags', '') != attributes or attr_mod == '-':
+        if attributes and (existing.get('attr_flags', '') != attributes or attr_mod == '-'):
             attrcmd = self.get_bin_path('chattr')
             if attrcmd:
                 attrcmd = [attrcmd, '%s%s' % (attr_mod, attributes), b_path]
@@ -1071,7 +1021,7 @@ class AnsibleModule(object):
         if prev_mode is None:
             prev_mode = stat.S_IMODE(path_stat.st_mode)
         is_directory = stat.S_ISDIR(path_stat.st_mode)
-        has_x_permissions = (prev_mode & EXEC_PERM_BITS) > 0
+        has_x_permissions = (prev_mode & S_IXANY) > 0
         apply_X_permission = is_directory or has_x_permissions
 
         # Get the umask, if the 'user' part is empty, the effect is as if (a) were
@@ -1164,10 +1114,10 @@ class AnsibleModule(object):
         return self.set_fs_attributes_if_different(file_args, changed, diff, expand)
 
     def add_path_info(self, kwargs):
-        '''
+        """
         for results that are files, supplement the info about the file
         in the return path with stats about the file path.
-        '''
+        """
 
         path = kwargs.get('path', kwargs.get('dest', None))
         if path is None:
@@ -1204,10 +1154,10 @@ class AnsibleModule(object):
         return kwargs
 
     def _check_locale(self):
-        '''
+        """
         Uses the locale module to test the currently set locale
         (per the LANG and LC_CTYPE environment settings)
-        '''
+        """
         try:
             # setting the locale to '' uses the default locale
             # as it would be returned by locale.getdefaultlocale()
@@ -1251,14 +1201,15 @@ class AnsibleModule(object):
                     setattr(self, PASS_VARS[k][0], PASS_VARS[k][1])
 
     def safe_eval(self, value, locals=None, include_exceptions=False):
+        # deprecated: description='no longer used in the codebase' core_version='2.21'
         return safe_eval(value, locals, include_exceptions)
 
     def _load_params(self):
-        ''' read the input and set the params attribute.
+        """ read the input and set the params attribute.
 
         This method is for backwards compatibility.  The guts of the function
         were moved out in 2.1 so that custom modules could read the parameters.
-        '''
+        """
         # debug overrides to read args from file or cmdline
         self.params = _load_params()
 
@@ -1269,7 +1220,7 @@ class AnsibleModule(object):
                 facility = getattr(syslog, self._syslog_facility, syslog.LOG_USER)
                 syslog.openlog(str(module), 0, facility)
                 syslog.syslog(syslog.LOG_INFO, msg)
-            except TypeError as e:
+            except (TypeError, ValueError) as e:
                 self.fail_json(
                     msg='Failed to log to syslog (%s). To proceed anyway, '
                         'disable syslog logging by setting no_target_syslog '
@@ -1290,25 +1241,26 @@ class AnsibleModule(object):
                 log_args = dict()
 
             module = 'ansible-%s' % self._name
-            if isinstance(module, binary_type):
+            if isinstance(module, bytes):
                 module = module.decode('utf-8', 'replace')
 
             # 6655 - allow for accented characters
-            if not isinstance(msg, (binary_type, text_type)):
+            if not isinstance(msg, (bytes, str)):
                 raise TypeError("msg should be a string (got %s)" % type(msg))
 
             # We want journal to always take text type
             # syslog takes bytes on py2, text type on py3
-            if isinstance(msg, binary_type):
-                journal_msg = remove_values(msg.decode('utf-8', 'replace'), self.no_log_values)
+            if isinstance(msg, bytes):
+                journal_msg = msg.decode('utf-8', 'replace')
             else:
                 # TODO: surrogateescape is a danger here on Py3
-                journal_msg = remove_values(msg, self.no_log_values)
+                journal_msg = msg
 
-            if PY3:
-                syslog_msg = journal_msg
-            else:
-                syslog_msg = journal_msg.encode('utf-8', 'replace')
+            if self._target_log_info:
+                journal_msg = ' '.join([self._target_log_info, journal_msg])
+
+            # ensure we clean up secrets!
+            journal_msg = remove_values(journal_msg, self.no_log_values)
 
             if has_journal:
                 journal_args = [("MODULE", os.path.basename(__file__))]
@@ -1339,12 +1291,12 @@ class AnsibleModule(object):
                                      **dict(journal_args))
                 except IOError:
                     # fall back to syslog since logging to journal failed
-                    self._log_to_syslog(syslog_msg)
+                    self._log_to_syslog(journal_msg)
             else:
-                self._log_to_syslog(syslog_msg)
+                self._log_to_syslog(journal_msg)
 
     def _log_invocation(self):
-        ''' log that ansible ran the module '''
+        """ log that ansible ran the module """
         # TODO: generalize a separate log function and make log_invocation use it
         # Sanitize possible password argument when logging.
         log_args = dict()
@@ -1362,9 +1314,9 @@ class AnsibleModule(object):
                 log_args[param] = 'NOT_LOGGING_PARAMETER'
             else:
                 param_val = self.params[param]
-                if not isinstance(param_val, (text_type, binary_type)):
+                if not isinstance(param_val, (str, bytes)):
                     param_val = str(param_val)
-                elif isinstance(param_val, text_type):
+                elif isinstance(param_val, str):
                     param_val = param_val.encode('utf-8')
                 log_args[param] = heuristic_log_sanitize(param_val, self.no_log_values)
 
@@ -1397,14 +1349,15 @@ class AnsibleModule(object):
         return None
 
     def get_bin_path(self, arg, required=False, opt_dirs=None):
-        '''
+        """
         Find system executable in PATH.
 
         :param arg: The executable to find.
-        :param required: if executable is not found and required is ``True``, fail_json
+        :param required: if the executable is not found and required is ``True``, fail_json
         :param opt_dirs: optional list of directories to search in addition to ``PATH``
-        :returns: if found return full path; otherwise return None
-        '''
+        :returns: if found return full path; otherwise return original arg, unless 'warning' then return None
+        :raises: Sysexit: if arg is not found and required=True (via fail_json)
+        """
 
         bin_path = None
         try:
@@ -1412,13 +1365,11 @@ class AnsibleModule(object):
         except ValueError as e:
             if required:
                 self.fail_json(msg=to_text(e))
-            else:
-                return bin_path
 
         return bin_path
 
     def boolean(self, arg):
-        '''Convert the argument to a boolean'''
+        """Convert the argument to a boolean"""
         if arg is None:
             return arg
 
@@ -1479,18 +1430,26 @@ class AnsibleModule(object):
         if deprecations:
             kwargs['deprecations'] = deprecations
 
+        # preserve bools/none from no_log
+        preserved = {k: v for k, v in kwargs.items() if v is None or isinstance(v, bool)}
+
+        # strip no_log collisions
         kwargs = remove_values(kwargs, self.no_log_values)
+
+        # return preserved
+        kwargs.update(preserved)
+
         print('\n%s' % self.jsonify(kwargs))
 
-    def exit_json(self, **kwargs):
-        ''' return from the module, without error '''
+    def exit_json(self, **kwargs) -> t.NoReturn:
+        """ return from the module, without error """
 
         self.do_cleanup_files()
         self._return_formatted(kwargs)
         sys.exit(0)
 
-    def fail_json(self, msg, **kwargs):
-        ''' return from the module, with an error message '''
+    def fail_json(self, msg, **kwargs) -> t.NoReturn:
+        """ return from the module, with an error message """
 
         kwargs['failed'] = True
         kwargs['msg'] = msg
@@ -1498,12 +1457,7 @@ class AnsibleModule(object):
         # Add traceback if debug or high verbosity and it is missing
         # NOTE: Badly named as exception, it really always has been a traceback
         if 'exception' not in kwargs and sys.exc_info()[2] and (self._debug or self._verbosity >= 3):
-            if PY2:
-                # On Python 2 this is the last (stack frame) exception and as such may be unrelated to the failure
-                kwargs['exception'] = 'WARNING: The below traceback may *not* be related to the actual failure.\n' +\
-                                      ''.join(traceback.format_tb(sys.exc_info()[2]))
-            else:
-                kwargs['exception'] = ''.join(traceback.format_tb(sys.exc_info()[2]))
+            kwargs['exception'] = ''.join(traceback.format_tb(sys.exc_info()[2]))
 
         self.do_cleanup_files()
         self._return_formatted(kwargs)
@@ -1518,7 +1472,7 @@ class AnsibleModule(object):
             self.fail_json(msg=to_native(e))
 
     def digest_from_file(self, filename, algorithm):
-        ''' Return hex digest of local file for a digest_method specified by name, or None if file is not present. '''
+        """ Return hex digest of local file for a digest_method specified by name, or None if file is not present. """
         b_filename = to_bytes(filename, errors='surrogate_or_strict')
 
         if not os.path.exists(b_filename):
@@ -1546,7 +1500,7 @@ class AnsibleModule(object):
         return digest_method.hexdigest()
 
     def md5(self, filename):
-        ''' Return MD5 hex digest of local file using digest_from_file().
+        """ Return MD5 hex digest of local file using digest_from_file().
 
         Do not use this function unless you have no other choice for:
             1) Optional backwards compatibility
@@ -1555,21 +1509,21 @@ class AnsibleModule(object):
         This function will not work on systems complying with FIPS-140-2.
 
         Most uses of this function can use the module.sha1 function instead.
-        '''
+        """
         if 'md5' not in AVAILABLE_HASH_ALGORITHMS:
             raise ValueError('MD5 not available.  Possibly running in FIPS mode')
         return self.digest_from_file(filename, 'md5')
 
     def sha1(self, filename):
-        ''' Return SHA1 hex digest of local file using digest_from_file(). '''
+        """ Return SHA1 hex digest of local file using digest_from_file(). """
         return self.digest_from_file(filename, 'sha1')
 
     def sha256(self, filename):
-        ''' Return SHA-256 hex digest of local file using digest_from_file(). '''
+        """ Return SHA-256 hex digest of local file using digest_from_file(). """
         return self.digest_from_file(filename, 'sha256')
 
     def backup_local(self, fn):
-        '''make a date-marked backup of the specified file, return True or False on success or failure'''
+        """make a date-marked backup of the specified file, return True or False on success or failure"""
 
         backupdest = ''
         if os.path.exists(fn):
@@ -1598,7 +1552,7 @@ class AnsibleModule(object):
         #   Similar to shutil.copy(), but metadata is copied as well - in fact,
         #   this is just shutil.copy() followed by copystat(). This is similar
         #   to the Unix command cp -p.
-        #
+
         # shutil.copystat(src, dst)
         #   Copy the permission bits, last access time, last modification time,
         #   and flags from src to dst. The file contents, owner, and group are
@@ -1626,32 +1580,20 @@ class AnsibleModule(object):
         current_attribs = current_attribs.get('attr_flags', '')
         self.set_attributes_if_different(dest, current_attribs, True)
 
-    def atomic_move(self, src, dest, unsafe_writes=False):
-        '''atomically move src to dest, copying attributes from dest, returns true on success
+    def atomic_move(self, src, dest, unsafe_writes=False, keep_dest_attrs=True):
+        """atomically move src to dest, copying attributes from dest, returns true on success
         it uses os.rename to ensure this as it is an atomic operation, rest of the function is
-        to work around limitations, corner cases and ensure selinux context is saved if possible'''
+        to work around limitations, corner cases and ensure selinux context is saved if possible"""
         context = None
         dest_stat = None
         b_src = to_bytes(src, errors='surrogate_or_strict')
         b_dest = to_bytes(dest, errors='surrogate_or_strict')
-        if os.path.exists(b_dest):
+        if os.path.exists(b_dest) and keep_dest_attrs:
             try:
                 dest_stat = os.stat(b_dest)
-
-                # copy mode and ownership
-                os.chmod(b_src, dest_stat.st_mode & PERM_BITS)
                 os.chown(b_src, dest_stat.st_uid, dest_stat.st_gid)
-
-                # try to copy flags if possible
-                if hasattr(os, 'chflags') and hasattr(dest_stat, 'st_flags'):
-                    try:
-                        os.chflags(b_src, dest_stat.st_flags)
-                    except OSError as e:
-                        for err in 'EOPNOTSUPP', 'ENOTSUP':
-                            if hasattr(errno, err) and e.errno == getattr(errno, err):
-                                break
-                        else:
-                            raise
+                shutil.copystat(b_dest, b_src)
+                os.utime(b_src, times=(time.time(), time.time()))
             except OSError as e:
                 if e.errno != errno.EPERM:
                     raise
@@ -1699,19 +1641,24 @@ class AnsibleModule(object):
                             os.close(tmp_dest_fd)
                             # leaves tmp file behind when sudo and not root
                             try:
-                                shutil.move(b_src, b_tmp_dest_name)
+                                shutil.move(b_src, b_tmp_dest_name, copy_function=shutil.copy if keep_dest_attrs else shutil.copy2)
                             except OSError:
                                 # cleanup will happen by 'rm' of tmpdir
                                 # copy2 will preserve some metadata
-                                shutil.copy2(b_src, b_tmp_dest_name)
+                                if keep_dest_attrs:
+                                    shutil.copy(b_src, b_tmp_dest_name)
+                                else:
+                                    shutil.copy2(b_src, b_tmp_dest_name)
 
                             if self.selinux_enabled():
                                 self.set_context_if_different(
                                     b_tmp_dest_name, context, False)
                             try:
                                 tmp_stat = os.stat(b_tmp_dest_name)
-                                if dest_stat and (tmp_stat.st_uid != dest_stat.st_uid or tmp_stat.st_gid != dest_stat.st_gid):
-                                    os.chown(b_tmp_dest_name, dest_stat.st_uid, dest_stat.st_gid)
+                                if keep_dest_attrs:
+                                    if dest_stat and (tmp_stat.st_uid != dest_stat.st_uid or tmp_stat.st_gid != dest_stat.st_gid):
+                                        os.chown(b_tmp_dest_name, dest_stat.st_uid, dest_stat.st_gid)
+                                    os.utime(b_tmp_dest_name, times=(time.time(), time.time()))
                             except OSError as e:
                                 if e.errno != errno.EPERM:
                                     raise
@@ -1736,9 +1683,13 @@ class AnsibleModule(object):
             # based on the current value of umask
             umask = os.umask(0)
             os.umask(umask)
-            os.chmod(b_dest, DEFAULT_PERM & ~umask)
+            os.chmod(b_dest, S_IRWU_RWG_RWO & ~umask)
+            dest_dir_stat = os.stat(os.path.dirname(b_dest))
             try:
-                os.chown(b_dest, os.geteuid(), os.getegid())
+                if dest_dir_stat.st_mode & stat.S_ISGID:
+                    os.chown(b_dest, os.geteuid(), dest_dir_stat.st_gid)
+                else:
+                    os.chown(b_dest, os.geteuid(), os.getegid())
             except OSError:
                 # We're okay with trying our best here.  If the user is not
                 # root (or old Unices) they won't be able to chown.
@@ -1772,13 +1723,9 @@ class AnsibleModule(object):
             # create a printable version of the command for use in reporting later,
             # which strips out things like passwords from the args list
             to_clean_args = args
-            if PY2:
-                if isinstance(args, text_type):
-                    to_clean_args = to_bytes(args)
-            else:
-                if isinstance(args, binary_type):
-                    to_clean_args = to_text(args)
-            if isinstance(args, (text_type, binary_type)):
+            if isinstance(args, bytes):
+                to_clean_args = to_text(args)
+            if isinstance(args, (str, bytes)):
                 to_clean_args = shlex.split(to_clean_args)
 
             clean_args = []
@@ -1797,19 +1744,14 @@ class AnsibleModule(object):
                         is_passwd = True
                 arg = heuristic_log_sanitize(arg, self.no_log_values)
                 clean_args.append(arg)
-            self._clean = ' '.join(shlex_quote(arg) for arg in clean_args)
+            self._clean = ' '.join(shlex.quote(arg) for arg in clean_args)
 
         return self._clean
-
-    def _restore_signal_handlers(self):
-        # Reset SIGPIPE to SIG_DFL, otherwise in Python2.7 it gets ignored in subprocesses.
-        if PY2 and sys.platform != 'win32':
-            signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
     def run_command(self, args, check_rc=False, close_fds=True, executable=None, data=None, binary_data=False, path_prefix=None, cwd=None,
                     use_unsafe_shell=False, prompt_regex=None, environ_update=None, umask=None, encoding='utf-8', errors='surrogate_or_strict',
                     expand_user_and_vars=True, pass_fds=None, before_communicate_callback=None, ignore_invalid_cwd=True, handle_exceptions=True):
-        '''
+        """
         Execute a command, returns rc, stdout, and stderr.
 
         The mechanism of this method for reading stdout and stderr differs from
@@ -1878,11 +1820,11 @@ class AnsibleModule(object):
             byte strings.  On python3, stdout and stderr are text strings converted
             according to the encoding and errors parameters.  If you want byte
             strings on python3, use encoding=None to turn decoding to text off.
-        '''
+        """
         # used by clean args later on
         self._clean = None
 
-        if not isinstance(args, (list, binary_type, text_type)):
+        if not isinstance(args, (list, bytes, str)):
             msg = "Argument 'args' to run_command must be list or string"
             self.fail_json(rc=257, cmd=args, msg=msg)
 
@@ -1891,7 +1833,7 @@ class AnsibleModule(object):
 
             # stringify args for unsafe/direct shell usage
             if isinstance(args, list):
-                args = b" ".join([to_bytes(shlex_quote(x), errors='surrogate_or_strict') for x in args])
+                args = b" ".join([to_bytes(shlex.quote(x), errors='surrogate_or_strict') for x in args])
             else:
                 args = to_bytes(args, errors='surrogate_or_strict')
 
@@ -1905,14 +1847,8 @@ class AnsibleModule(object):
                 shell = True
         else:
             # ensure args are a list
-            if isinstance(args, (binary_type, text_type)):
-                # On python2.6 and below, shlex has problems with text type
-                # On python3, shlex needs a text type.
-                if PY2:
-                    args = to_bytes(args, errors='surrogate_or_strict')
-                elif PY3:
-                    args = to_text(args, errors='surrogateescape')
-                args = shlex.split(args)
+            if isinstance(args, (bytes, str)):
+                args = shlex.split(to_text(args, errors='surrogateescape'))
 
             # expand ``~`` in paths, and all environment vars
             if expand_user_and_vars:
@@ -1922,11 +1858,8 @@ class AnsibleModule(object):
 
         prompt_re = None
         if prompt_regex:
-            if isinstance(prompt_regex, text_type):
-                if PY3:
-                    prompt_regex = to_bytes(prompt_regex, errors='surrogateescape')
-                elif PY2:
-                    prompt_regex = to_bytes(prompt_regex, errors='surrogate_or_strict')
+            if isinstance(prompt_regex, str):
+                prompt_regex = to_bytes(prompt_regex, errors='surrogateescape')
             try:
                 prompt_re = re.compile(prompt_regex, re.MULTILINE)
             except re.error:
@@ -1965,7 +1898,6 @@ class AnsibleModule(object):
             st_in = subprocess.PIPE
 
         def preexec():
-            self._restore_signal_handlers()
             if umask:
                 os.umask(umask)
 
@@ -1979,10 +1911,8 @@ class AnsibleModule(object):
             preexec_fn=preexec,
             env=env,
         )
-        if PY3 and pass_fds:
+        if pass_fds:
             kwargs["pass_fds"] = pass_fds
-        elif PY2 and pass_fds:
-            kwargs['close_fds'] = False
 
         # make sure we're in the right working directory
         if cwd:
@@ -2014,7 +1944,7 @@ class AnsibleModule(object):
             if data:
                 if not binary_data:
                     data += '\n'
-                if isinstance(data, text_type):
+                if isinstance(data, str):
                     data = to_bytes(data)
 
             selector.register(cmd.stdout, selectors.EVENT_READ)
@@ -2096,9 +2026,8 @@ class AnsibleModule(object):
 
     def append_to_file(self, filename, str):
         filename = os.path.expandvars(os.path.expanduser(filename))
-        fh = open(filename, 'a')
-        fh.write(str)
-        fh.close()
+        with open(filename, 'a') as fh:
+            fh.write(str)
 
     def bytes_to_human(self, size):
         return bytes_to_human(size)
@@ -2126,7 +2055,7 @@ class AnsibleModule(object):
                 # not as exact as above, but should be good enough for most platforms that fail the previous call
                 buffer_size = select.PIPE_BUF
             except Exception:
-                buffer_size = 9000  # use sane default JIC
+                buffer_size = 9000  # use logical default JIC
 
         return buffer_size
 
@@ -2136,30 +2065,43 @@ def get_module_path():
 
 
 def __getattr__(importable_name):
-    """Inject import-time deprecation warnings.
-
-    Specifically, for ``literal_eval()``, ``_literal_eval()``
-    and ``get_exception()``.
-    """
-    if importable_name == 'get_exception':
-        deprecate(
-            msg=f'The `ansible.module_utils.basic.'
-            f'{importable_name}` function is deprecated.',
-            version='2.19',
+    """Inject import-time deprecation warnings."""
+    if importable_name == 'datetime':
+        import datetime
+        importable = datetime
+    elif importable_name == 'signal':
+        import signal
+        importable = signal
+    elif importable_name == 'types':
+        import types
+        importable = types
+    elif importable_name == 'chain':
+        from itertools import chain
+        importable = chain
+    elif importable_name == 'repeat':
+        from itertools import repeat
+        importable = repeat
+    elif importable_name in {
+        'PY2', 'PY3', 'b', 'binary_type', 'integer_types',
+        'iteritems', 'string_types', 'test_type'
+    }:
+        import importlib
+        importable = getattr(
+            importlib.import_module('ansible.module_utils.six'),
+            importable_name
         )
-        from ansible.module_utils.pycompat24 import get_exception
-        return get_exception
-
-    if importable_name in {'literal_eval', '_literal_eval'}:
-        deprecate(
-            msg=f'The `ansible.module_utils.basic.'
-            f'{importable_name}` function is deprecated.',
-            version='2.19',
+    elif importable_name == 'map':
+        importable = map
+    elif importable_name == 'shlex_quote':
+        importable = shlex.quote
+    else:
+        raise AttributeError(
+            f'cannot import name {importable_name !r} '
+            f"from '{__name__}' ({__file__ !s})"
         )
-        from ast import literal_eval
-        return literal_eval
 
-    raise AttributeError(
-        f'cannot import name {importable_name !r} '
-        f'has no attribute ({__file__ !s})',
+    deprecate(
+        msg=f"Importing '{importable_name}' from '{__name__}' is deprecated.",
+        version="2.21",
     )
+    return importable

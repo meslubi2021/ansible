@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 
-DOCUMENTATION = r'''
+DOCUMENTATION = r"""
 ---
 author: Ansible Core Team (@ansible)
 module: import_role
@@ -85,11 +85,11 @@ seealso:
 - module: ansible.builtin.import_tasks
 - module: ansible.builtin.include_role
 - module: ansible.builtin.include_tasks
-- ref: playbooks_reuse_includes
+- ref: playbooks_reuse
   description: More information related to including and importing playbooks, roles and tasks.
-'''
+"""
 
-EXAMPLES = r'''
+EXAMPLES = r"""
 - hosts: all
   tasks:
     - ansible.builtin.import_role:
@@ -110,8 +110,8 @@ EXAMPLES = r'''
       ansible.builtin.import_role:
         name: myrole
       when: not idontwanttorun
-'''
+"""
 
-RETURN = r'''
+RETURN = r"""
 # This module does not return anything except tasks to execute.
-'''
+"""

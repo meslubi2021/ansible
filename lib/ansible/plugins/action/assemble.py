@@ -37,7 +37,7 @@ class ActionModule(ActionBase):
     TRANSFERS_FILES = True
 
     def _assemble_from_fragments(self, src_path, delimiter=None, compiled_regexp=None, ignore_hidden=False, decrypt=True):
-        ''' assemble a file from a directory of fragments '''
+        """ assemble a file from a directory of fragments """
 
         tmpfd, temp_path = tempfile.mkstemp(dir=C.DEFAULT_LOCAL_TMP)
         tmp = os.fdopen(tmpfd, 'wb')
@@ -139,7 +139,7 @@ class ActionModule(ActionBase):
 
             if path_checksum != dest_stat['checksum']:
 
-                if self._play_context.diff:
+                if self._task.diff:
                     diff = self._get_diff_data(dest, path, task_vars)
 
                 remote_path = self._connection._shell.join_path(self._connection._shell.tmpdir, 'src')
